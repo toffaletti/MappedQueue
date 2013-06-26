@@ -22,7 +22,6 @@ public class TestMappedFile {
         {
             final MappedFile mappedFile = new MappedFile(file, 1024 * 1024);
             ByteBuffer data = mappedFile.take();
-            offerData.flip();
             Assert.assertEquals(offerData, data);
         }
     }
@@ -33,7 +32,6 @@ public class TestMappedFile {
             if (!mappedFile.offer(data)) {
                 Assert.fail();
             }
-            data.flip();
         }
         mappedFile.close();
     }
@@ -46,7 +44,7 @@ public class TestMappedFile {
         mappedFile.close();
     }
 
-    public void largeMessages(String name, final Checksum writeChecksum, final Checksum readChecksum) throws IOException, ExecutionException, InterruptedException {
+    private void largeMessages(String name, final Checksum writeChecksum, final Checksum readChecksum) throws IOException, ExecutionException, InterruptedException {
         final File file = File.createTempFile("mapped", "test");
         file.deleteOnExit();
         final int iterations = 1000;
@@ -177,5 +175,32 @@ public class TestMappedFile {
         file.deleteOnExit();
         final MappedFile mappedFile = new MappedFile(file, 1);
         mappedFile.close();
+    }
+
+    @Test
+    public void eofMarker() throws Exception {
+        final File file = File.createTempFile("mapped", "test");
+        file.deleteOnExit();
+        int writeCount = 0;
+        int readCount = 0;
+        {
+            final MappedFile mappedFile = new MappedFile(file, 4096);
+            ByteBuffer buf = ByteBuffer.allocate(57);
+            while (mappedFile.offer(buf)) {
+                ++writeCount;
+            }
+        }
+
+        {
+            final MappedFile mappedFile = new MappedFile(file, 4096);
+            for (; ; ) {
+                ByteBuffer buf = mappedFile.take();
+                if (buf.capacity() == 0) break;
+                readCount++;
+            }
+        }
+
+        Assert.assertTrue(writeCount > 0);
+        Assert.assertEquals(writeCount, readCount);
     }
 }

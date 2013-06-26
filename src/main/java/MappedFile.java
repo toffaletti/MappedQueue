@@ -11,6 +11,7 @@ public class MappedFile implements Closeable {
     public static final long DEFAULT_FILE_SIZE = 1 * 1024 * 1024 * 1024;
     public static final long OVERHEAD_SIZE = 8L;
     private static final int MAGIC_FOOTER = 0xd34db33f;
+    private static final int EOF_FOOTER = 0xfe0fe0ff;
 
     private final RandomAccessFile randomAccessFile;
     private final MappedByteBuffer mappedByteBuffer;
@@ -48,28 +49,29 @@ public class MappedFile implements Closeable {
 
     public boolean offer(ByteBuffer buffer) {
         int length = buffer.remaining();
+        assert length > 0;
         if (remaining() >= length) {
-            final int dataChecksum;
-            if (checksum != null) {
-                checksum.reset();
-
-                buffer.mark();
-                for (int i = 0; i < length; ++i) {
-                    checksum.update(buffer.get());
-                }
-                buffer.reset();
-                dataChecksum = (int) checksum.getValue();
-            } else {
-                dataChecksum = MAGIC_FOOTER;
-            }
+            final int dataChecksum = checksum(buffer);
 
             mappedByteBuffer.putInt(length);
+            buffer.mark();
             mappedByteBuffer.put(buffer);
+            buffer.reset();
             mappedByteBuffer.putInt(dataChecksum);
             //mappedByteBuffer.force();
             return true;
+        } else {
+            // write eof mark
+            mappedByteBuffer.mark();
+            finish();
+            mappedByteBuffer.reset();
         }
         return false;
+    }
+
+    public void finish() {
+        mappedByteBuffer.putInt(0);
+        mappedByteBuffer.putInt(EOF_FOOTER);
     }
 
     public ByteBuffer poll() {
@@ -77,26 +79,22 @@ public class MappedFile implements Closeable {
         int length = mappedByteBuffer.getInt();
         if (length > 0 && length < Integer.MAX_VALUE) {
             ByteBuffer tmp = mappedByteBuffer.slice();
+            tmp.limit(length);
             mappedByteBuffer.position(mappedByteBuffer.position() + length);
             final int expectedChecksum = mappedByteBuffer.getInt();
 
             // calculate checksum of data in slice
-            final int dataChecksum;
-            if (checksum != null) {
-                checksum.reset();
-                tmp.mark();
-                for (int i = 0; i < length; ++i) {
-                    checksum.update(tmp.get());
-                }
-                tmp.reset();
-                dataChecksum = (int) checksum.getValue();
-            } else {
-                dataChecksum = MAGIC_FOOTER;
-            }
+            final int dataChecksum = checksum(tmp);
 
             if (expectedChecksum == dataChecksum) {
-                tmp.limit(length);
                 return tmp;
+            }
+        } else if (length == 0) {
+            // avoid spinning on eof by returning empty ByteBuffer
+            final int footer = mappedByteBuffer.getInt();
+            if (footer == EOF_FOOTER) {
+                mappedByteBuffer.reset();
+                return ByteBuffer.allocate(0);
             }
         }
         mappedByteBuffer.reset();
@@ -119,5 +117,24 @@ public class MappedFile implements Closeable {
     @Override
     public void close() throws IOException {
         randomAccessFile.close();
+    }
+
+    private int checksum(ByteBuffer data) {
+        final int dataChecksum;
+        if (checksum != null) {
+            checksum.reset();
+            data.mark();
+            byte[] buf = new byte[1024];
+            while (data.remaining() > 0) {
+                int readSize = Math.min(1024, data.remaining());
+                data.get(buf, 0, readSize);
+                checksum.update(buf, 0, readSize);
+            }
+            data.reset();
+            dataChecksum = (int) checksum.getValue();
+        } else {
+            dataChecksum = MAGIC_FOOTER;
+        }
+        return dataChecksum;
     }
 }
